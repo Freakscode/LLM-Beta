@@ -1,4 +1,6 @@
 import streamlit as st
+import accelerate
+from transformers import pipeline
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
@@ -21,8 +23,8 @@ def get_pdf_text(pdf_docs):
 
 def get_chunks(raw_text):
     text_splitter = CharacterTextSplitter(separator="\n",
-                                          chunk_size=1000,
-                                          chunk_overlap=200,
+                                          chunk_size=400,
+                                          chunk_overlap=250,
                                           length_function=len
                                           )
     
@@ -31,14 +33,15 @@ def get_chunks(raw_text):
 
 
 def VectorStore(chunks):
-    embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-large")
+    model = 'hkunlp/instructor-large'
+    embeddings = HuggingFaceInstructEmbeddings(model_name=model)
     VectorStore = FAISS.from_texts(texts=chunks, embedding=embeddings)
     return VectorStore
     
 
 def get_conversation(vectorstore):
-    model = 'meta-llama/Llama-2-7b-chat-hf'
-    llm = HuggingFaceHub(repo_id=model, model_kwargs={'temperature':0,'max_length': 512})
+    model = 'bigscience/bloom'
+    llm = HuggingFaceHub(repo_id=model, model_kwargs={'temperature':0.2,'max_length':500, 'num_beams': 5})
     memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
     conversation = ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -48,6 +51,19 @@ def get_conversation(vectorstore):
     return conversation
 
 
+def handle_userinput(user_question):
+    response = st.session_state.conversation({'question': user_question})
+    st.session_state.chat_history = response['chat_history']
+    
+    for i, message in enumerate(st.session_state.chat_history):
+        if i % 2 == 0:
+            st.write(user_template.replace(
+                "{{MSG}}", message.content), unsafe_allow_html=True)
+        else:
+            st.write(bot_template.replace(
+                "{{MSG}}", message.content), unsafe_allow_html=True)
+
+
 def main():
     load_dotenv()
     st.set_page_config(page_title='BETA-LLM-V1.0', page_icon=':shark:', layout='wide', initial_sidebar_state='auto')
@@ -55,12 +71,14 @@ def main():
     
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = None
         
     st.header('BETA-LLM-V1.0')
-    st.text_input('Ask your question about the documents here:')
-    
-    st.write(user_template.replace("{{MSG}}","Hola bot"), unsafe_allow_html=True)
-    st.write(bot_template.replace("{{MSG}}", "Hola usuario"), unsafe_allow_html=True)    
+    user_question = st.text_input('Ask your question about the documents here:')
+    if user_question:
+        handle_userinput(user_question)
+      
     with st.sidebar:
         st.subheader('Your documents')
         pdf_docs = st.file_uploader(
@@ -68,19 +86,19 @@ def main():
         
         if st.button('Process'):
             with st.spinner('Processing...'):
-                #Get pdf text
+                # Get pdf text
                 raw_text = get_pdf_text(pdf_docs)
                 
-                #Get text chunks
+                # Get text chunks
                 chunks = get_chunks(raw_text)
                 
-                #Create vector store
+                # Create vector store
                 vector_store = VectorStore(chunks)
                 
-                #Conversation chain
+                # Assign vector store and create conversation chain
+                st.session_state.vector_store = vector_store
                 st.session_state.conversation = get_conversation(vector_store)
-    
-                
-                
+
 if __name__ == '__main__':
     main()
+
